@@ -162,7 +162,8 @@ up = st.file_uploader("PNG, JPG, JPEG", type=["png", "jpg", "jpeg"])
 
 if up and Path(MODEL_PATH).exists():
     img = Image.open(up).convert("RGB")
-    st.image(img, caption="Uploaded", use_container_width=True)
+    st.image(img, caption="Uploaded", use_column_width=True)
+
 
     # Preprocess
     lb, scale, pad_w, pad_h, orig_size = letterbox(img, INPUT_SIZE)
@@ -179,7 +180,7 @@ if up and Path(MODEL_PATH).exists():
     out = draw_boxes(out, dets)
     col1, col2 = st.columns(2)
     with col1:
-        st.image(out, caption="Prediction", use_container_width=True)
+        st.image(out, caption="Prediction", use_column_width=True)
     with col2:
         import pandas as pd
         if dets:
@@ -188,3 +189,4 @@ if up and Path(MODEL_PATH).exists():
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No detections.")
+
