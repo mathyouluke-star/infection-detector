@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ----------------- CONFIG -----------------
 APP_TITLE = "🧫🦠 Infection Detector"
 MODEL_PATH = "best.onnx"        # file at repo root
-INPUT_SIZE = 640                # training/export size (adjust if different)
+INPUT_SIZE = 416                # training/export size (adjust if different)
 CONF_THRES = 0.25
 IOU_THRES = 0.45
 CLASS_NAMES = ["infected", "normal"]  # update to your labels order
@@ -31,7 +31,7 @@ def load_sess(model_path: str):
     out_names = [o.name for o in sess.get_outputs()]
     return sess, in_name, out_names
 
-def letterbox(im: Image.Image, new_size=640, color=(114,114,114)):
+def letterbox(im: Image.Image, new_size=416, color=(114,114,114)):
     """Resize & pad to square, return image and scaling meta."""
     w, h = im.size
     scale = min(new_size / w, new_size / h)
@@ -189,4 +189,5 @@ if up and Path(MODEL_PATH).exists():
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No detections.")
+
 
