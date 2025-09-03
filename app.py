@@ -124,18 +124,33 @@ def postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thres=0.25, iou_thres
 
 def draw_boxes(im: Image.Image, dets):
     draw = ImageDraw.Draw(im)
+    W, H = im.size
+    # thickness scales with image size but stays >=2 px
+    thick = max(2, W // 150)
+
     try:
         font = ImageFont.load_default()
     except Exception:
         font = None
+
     for x1, y1, x2, y2, cf, cid in dets:
-        draw.rectangle([x1, y1, x2, y2], outline=(34, 197, 94), width=3)
+        # cast to ints so PIL draws crisp lines
+        x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+        draw.rectangle([x1, y1, x2, y2], outline=(34, 197, 94), width=thick)
+
         label = f"{CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else cid}: {cf:.2f}"
-        tw = draw.textlength(label, font=font)
-        th = 12
-        draw.rectangle([x1, y1 - th - 4, x1 + tw + 6, y1], fill=(34, 197, 94))
-        draw.text((x1 + 3, y1 - th - 2), label, fill=(0, 0, 0), font=font)
+        # label background
+        try:
+            tw = draw.textlength(label, font=font)
+        except Exception:
+            tw = 8 * len(label)
+        th = 12 + (thick // 2)
+        y0 = max(0, y1 - th - 4)
+        draw.rectangle([x1, y0, x1 + int(tw) + 6, y0 + th], fill=(34, 197, 94))
+        draw.text((x1 + 3, y0 + 2), label, fill=(0, 0, 0), font=font)
+
     return im
+
 
 # Sidebar controls
 with st.sidebar:
@@ -184,3 +199,12 @@ if up and Path(MODEL_PATH).exists():
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No detections.")
+
+    with st.spinner("Running inference…"):
+        outputs = sess.run(None, {in_name: arr})
+        pred = outputs[0]
+        dets = postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thr, iou_thr)
+
+    st.write(f"**Detections:** {len(dets)}")
+
+
