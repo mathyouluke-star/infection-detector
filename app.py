@@ -12,7 +12,7 @@ INPUT_SIZE = 416                      # must match ONNX export size
 # Hard-coded thresholds
 CONF_THRES = 0.85
 IOU_THRES  = 0.85
-MIN_AREA   = 180                    # px^2
+MIN_AREA   = 100                    # px^2
 INFECTED_CLASS_ID = 0                 # treat class 0 as "infected"
 
 # Display names (order must match model classes)
@@ -241,6 +241,7 @@ if up and Path(MODEL_PATH).exists():
             st.dataframe(df, use_container_width=True)
         else:
             st.write("No detections after filtering.")
+
 
 
 
