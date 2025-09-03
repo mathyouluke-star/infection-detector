@@ -1,24 +1,28 @@
-import tempfile
 from pathlib import Path
-
 import numpy as np
 import onnxruntime as ort
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
-# ----------------- CONFIG -----------------
+# ================= CONFIG =================
 APP_TITLE = "🧫🦠 Infection Detector"
-MODEL_PATH = "best.onnx"          # file at repo root
-INPUT_SIZE = 416                  # must match your ONNX export size
+MODEL_PATH = "best.onnx"            # model file at repo root
+INPUT_SIZE = 416                    # must match ONNX export size
 CONF_THRES = 0.25
 IOU_THRES = 0.45
-CLASS_NAMES = ["infected", "normal"]  # edit to your label order
-# ------------------------------------------
+
+# Class names in the SAME ORDER as training/export
+CLASS_NAMES = ["infected", "normal"]
+
+# Which class name indicates malaria parasites?
+INFECTED_CLASS_NAME = "infected"
+# =========================================
 
 st.set_page_config(page_title="Infection Detector", page_icon="🧫", layout="wide")
 st.title(APP_TITLE)
 st.caption("Upload a microscope image to detect malaria-infected cells (ONNX, CPU).")
 
+# ---------- Model loading ----------
 @st.cache_resource(show_spinner=False)
 def load_sess(model_path: str):
     sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
@@ -26,6 +30,7 @@ def load_sess(model_path: str):
     out_names = [o.name for o in sess.get_outputs()]
     return sess, in_name, out_names
 
+# ---------- Pre/Post utils ----------
 def letterbox(im: Image.Image, new_size=416, color=(114, 114, 114)):
     """Resize & pad to square, return image and scaling meta."""
     w, h = im.size
@@ -85,7 +90,7 @@ def postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thres=0.25, iou_thres
         raise ValueError(f"Unexpected output shape: {pred.shape}")
     if pred.shape[1] < pred.shape[2]:         # (1, N, 5+nc)
         pred = pred[0]
-    else:                                      # (1, 5+nc, N) -> (N, 5+nc)
+    else:                                     # (1, 5+nc, N) -> (N, 5+nc)
         pred = pred[0].transpose(1, 0)
 
     if pred.shape[1] < 6:
@@ -122,10 +127,9 @@ def postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thres=0.25, iou_thres
             results.append((*boxes[i].tolist(), float(conf[i]), int(c)))
     return results
 
-def draw_boxes(im: Image.Image, dets):
+def draw_boxes(im: Image.Image, dets, show_only_infected=True):
     draw = ImageDraw.Draw(im)
     W, H = im.size
-    # thickness scales with image size but stays >=2 px
     thick = max(2, W // 150)
 
     try:
@@ -133,33 +137,36 @@ def draw_boxes(im: Image.Image, dets):
     except Exception:
         font = None
 
+    infected_idx = CLASS_NAMES.index(INFECTED_CLASS_NAME) if INFECTED_CLASS_NAME in CLASS_NAMES else 0
+
     for x1, y1, x2, y2, cf, cid in dets:
-        # cast to ints so PIL draws crisp lines
+        if show_only_infected and cid != infected_idx:
+            continue
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-        draw.rectangle([x1, y1, x2, y2], outline=(34, 197, 94), width=thick)
+        color = (34, 197, 94) if cid == infected_idx else (180, 180, 180)
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=thick)
 
         label = f"{CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else cid}: {cf:.2f}"
-        # label background
         try:
             tw = draw.textlength(label, font=font)
         except Exception:
             tw = 8 * len(label)
         th = 12 + (thick // 2)
         y0 = max(0, y1 - th - 4)
-        draw.rectangle([x1, y0, x1 + int(tw) + 6, y0 + th], fill=(34, 197, 94))
+        draw.rectangle([x1, y0, x1 + int(tw) + 6, y0 + th], fill=color)
         draw.text((x1 + 3, y0 + 2), label, fill=(0, 0, 0), font=font)
 
     return im
 
-
-# Sidebar controls
+# ---------- Sidebar ----------
 with st.sidebar:
     st.subheader("⚙️ Settings")
     conf_thr = st.slider("Confidence threshold", 0.05, 0.90, CONF_THRES, 0.05)
     iou_thr = st.slider("IOU threshold (NMS)", 0.10, 0.90, IOU_THRES, 0.05)
+    show_all = st.toggle("Show non-infected boxes", value=False)
     st.caption("Edit class names in `app.py` if needed.")
 
-# Load model
+# ---------- Load / guard ----------
 if not Path(MODEL_PATH).exists():
     st.error(f"Model file `{MODEL_PATH}` not found in the repo root.")
 else:
@@ -169,6 +176,7 @@ else:
 st.subheader("📤 Upload Image")
 up = st.file_uploader("PNG, JPG, JPEG", type=["png", "jpg", "jpeg"])
 
+# ---------- Inference ----------
 if up and Path(MODEL_PATH).exists():
     img = Image.open(up).convert("RGB")
     st.image(img, caption="Uploaded", use_column_width=True)
@@ -183,28 +191,31 @@ if up and Path(MODEL_PATH).exists():
         pred = outputs[0]
         dets = postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thr, iou_thr)
 
-    # Draw and show
+    # Count only "infected"
+    infected_idx = CLASS_NAMES.index(INFECTED_CLASS_NAME) if INFECTED_CLASS_NAME in CLASS_NAMES else 0
+    infected_dets = [d for d in dets if d[5] == infected_idx]
+
+    # High-level result
+    if infected_dets:
+        st.success(f"🧫 Malaria parasites detected! Count: {len(infected_dets)}")
+    else:
+        st.info("✅ No malaria parasites detected.")
+
+    # Draw boxes (infected only by default)
     out = img.copy()
-    out = draw_boxes(out, dets)
+    out = draw_boxes(out, dets, show_only_infected=not show_all)
+
     col1, col2 = st.columns(2)
     with col1:
         st.image(out, caption="Prediction", use_column_width=True)
     with col2:
         import pandas as pd
-        if dets:
-            df = pd.DataFrame(dets, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
-            df["class_name"] = df["class_id"].apply(
-                lambda i: CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
-            )
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No detections.")
-
-    with st.spinner("Running inference…"):
-        outputs = sess.run(None, {in_name: arr})
-        pred = outputs[0]
-        dets = postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thr, iou_thr)
-
-    st.write(f"**Detections:** {len(dets)}")
-
-
+        with st.expander("Show detection details"):
+            if dets:
+                df = pd.DataFrame(dets, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
+                df["class_name"] = df["class_id"].apply(
+                    lambda i: CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
+                )
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.write("No detections.")
