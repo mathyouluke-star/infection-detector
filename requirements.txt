@@ -1,6 +1,7 @@
 streamlit>=1.36
 ultralytics>=8.2
 onnxruntime>=1.18
-torch>=2.2
+opencv-python-headless>=4.8
 pillow
+numpy
 pandas
