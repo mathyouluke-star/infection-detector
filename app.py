@@ -4,17 +4,24 @@ import onnxruntime as ort
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
-# ================= CONFIG =================
+# ================= FIXED CONFIG =================
 APP_TITLE = "🧫🦠 Infection Detector"
-MODEL_PATH = "best.onnx"            # model file at repo root
-INPUT_SIZE = 416                    # must match ONNX export size
-CONF_THRES_DEFAULT = 0.25
-IOU_THRES_DEFAULT  = 0.45
+MODEL_PATH = "best.onnx"              # model file at repo root
+INPUT_SIZE = 416                      # must match ONNX export size
 
-# Edit to match your training label order if you know it.
-# If unsure, these are just display names; you can choose which class counts as "infected" in the sidebar.
+# Hard-coded thresholds
+CONF_THRES = 0.85
+IOU_THRES  = 0.85
+MIN_AREA   = 300                      # px^2
+INFECTED_CLASS_ID = 0                 # treat class 0 as "infected"
+
+# Display names (order must match model classes)
 CLASS_NAMES = ["infected", "normal"]
-# =========================================
+
+# Colors
+RED   = (220, 38, 38)   # infected boxes & danger banner bg
+GREEN = (34, 197, 94)   # safe banner bg
+# ===============================================
 
 st.set_page_config(page_title="Infection Detector", page_icon="🧫", layout="wide")
 st.title(APP_TITLE)
@@ -125,21 +132,21 @@ def postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thres=0.25, iou_thres
             results.append((*boxes[i].tolist(), float(conf[i]), int(c)))
     return results
 
-def draw_boxes(im: Image.Image, dets, infected_id: int, show_all=False):
+def draw_infected_boxes(im: Image.Image, dets, infected_id: int):
+    """Draw only infected boxes in red."""
     draw = ImageDraw.Draw(im)
-    W, H = im.size
+    W, _ = im.size
     thick = max(2, W // 150)
-
     try:
         font = ImageFont.load_default()
     except Exception:
         font = None
 
     for x1, y1, x2, y2, cf, cid in dets:
-        if not show_all and cid != infected_id:
+        if cid != infected_id:
             continue
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-        color = (34, 197, 94) if cid == infected_id else (180, 180, 180)
+        color = RED
         draw.rectangle([x1, y1, x2, y2], outline=color, width=thick)
 
         name = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else str(cid)
@@ -152,31 +159,14 @@ def draw_boxes(im: Image.Image, dets, infected_id: int, show_all=False):
         y0 = max(0, y1 - th - 4)
         draw.rectangle([x1, y0, x1 + int(tw) + 6, y0 + th], fill=color)
         draw.text((x1 + 3, y0 + 2), label, fill=(0, 0, 0), font=font)
-
     return im
-
-# ---------- Sidebar ----------
-with st.sidebar:
-    st.subheader("⚙️ Settings")
-    conf_thr = st.slider("Confidence threshold", 0.05, 0.90, CONF_THRES_DEFAULT, 0.05)
-    iou_thr  = st.slider("IOU threshold (NMS)", 0.10, 0.90, IOU_THRES_DEFAULT, 0.05)
-    min_area = st.number_input("Min box area (px²) to count", min_value=0, value=25, step=5)
-    # Choose which class means "infected"
-    infected_choice = st.selectbox(
-        "Class to treat as 'infected'",
-        options=list(range(len(CLASS_NAMES))),
-        format_func=lambda i: f"{i}: {CLASS_NAMES[i] if i < len(CLASS_NAMES) else i}",
-        index=0 if len(CLASS_NAMES) > 0 else 0
-    )
-    show_all = st.toggle("Show non-infected boxes", value=False)
-    st.caption("If predictions look flipped, try switching the infected class here.")
 
 # ---------- Load / guard ----------
 if not Path(MODEL_PATH).exists():
     st.error(f"Model file `{MODEL_PATH}` not found in the repo root.")
 else:
     sess, in_name, out_names = load_sess(MODEL_PATH)
-    st.success(f"Model loaded ✓ ({MODEL_PATH})")
+    st.success(f"Model loaded ✓  ({MODEL_PATH})")
 
 st.subheader("📤 Upload Image")
 up = st.file_uploader("PNG, JPG, JPEG", type=["png", "jpg", "jpeg"])
@@ -184,7 +174,6 @@ up = st.file_uploader("PNG, JPG, JPEG", type=["png", "jpg", "jpeg"])
 # ---------- Inference ----------
 if up and Path(MODEL_PATH).exists():
     img = Image.open(up).convert("RGB")
-    st.image(img, caption="Uploaded", use_column_width=True)
 
     # Preprocess
     lb, scale, pad_w, pad_h, orig_size = letterbox(img, INPUT_SIZE)
@@ -194,39 +183,61 @@ if up and Path(MODEL_PATH).exists():
     with st.spinner("Running inference…"):
         outputs = sess.run(None, {in_name: arr})
         pred = outputs[0]
-        dets = postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thr, iou_thr)
+        dets = postprocess(pred, orig_size, scale, pad_w, pad_h, CONF_THRES, IOU_THRES)
 
-    # Filter tiny boxes and split by class
+    # Filter tiny boxes & keep infected/non-infected separately
     filtered = []
     for x1, y1, x2, y2, cf, cid in dets:
         area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
-        if area >= float(min_area):
+        if area >= MIN_AREA:
             filtered.append((x1, y1, x2, y2, cf, cid))
 
-    infected_dets = [d for d in filtered if d[5] == infected_choice]
+    infected_dets = [d for d in filtered if d[5] == INFECTED_CLASS_ID]
 
-    # High-level result
+    # Banner
+    banner_container = st.container()
     if infected_dets:
-        st.success(f"🧫 Malaria parasites detected! Count: {len(infected_dets)}")
+        with banner_container:
+            st.markdown(
+                f"""
+                <div style="background-color: rgb({RED[0]}, {RED[1]}, {RED[2]}); 
+                            color: white; padding: 14px 16px; border-radius: 10px;
+                            font-weight: 600; font-size: 18px;">
+                    🧫 Malaria parasites detected! Count: {len(infected_dets)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
     else:
-        st.info("✅ No malaria parasites detected.")
+        with banner_container:
+            st.markdown(
+                f"""
+                <div style="background-color: rgb({GREEN[0]}, {GREEN[1]}, {GREEN[2]}); 
+                            color: black; padding: 14px 16px; border-radius: 10px;
+                            font-weight: 600; font-size: 18px;">
+                    ✅ No malaria parasites detected.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    # Draw boxes
+    # Annotated image (infected only, red)
     out = img.copy()
-    out = draw_boxes(out, filtered, infected_id=infected_choice, show_all=show_all)
+    out = draw_infected_boxes(out, filtered, infected_id=INFECTED_CLASS_ID)
 
     col1, col2 = st.columns(2)
     with col1:
+        st.image(img, caption="Uploaded", use_column_width=True)
         st.image(out, caption="Prediction", use_column_width=True)
     with col2:
         import pandas as pd
-        with st.expander("Show detection details"):
-            if filtered:
-                df = pd.DataFrame(filtered, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
-                df["class_name"] = df["class_id"].apply(
-                    lambda i: CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
-                )
-                df["area(px²)"] = (df["x2"] - df["x1"]) * (df["y2"] - df["y1"])
-                st.dataframe(df, use_container_width=True)
-            else:
-                st.write("No detections after filtering.")
+        st.subheader("Detection details")
+        if filtered:
+            df = pd.DataFrame(filtered, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
+            df["class_name"] = df["class_id"].apply(
+                lambda i: CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
+            )
+            df["area(px²)"] = (df["x2"] - df["x1"]) * (df["y2"] - df["y1"])
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.write("No detections after filtering.")
