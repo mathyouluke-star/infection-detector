@@ -8,14 +8,12 @@ from PIL import Image, ImageDraw, ImageFont
 APP_TITLE = "🧫🦠 Infection Detector"
 MODEL_PATH = "best.onnx"            # model file at repo root
 INPUT_SIZE = 416                    # must match ONNX export size
-CONF_THRES = 0.25
-IOU_THRES = 0.45
+CONF_THRES_DEFAULT = 0.25
+IOU_THRES_DEFAULT  = 0.45
 
-# Class names in the SAME ORDER as training/export
+# Edit to match your training label order if you know it.
+# If unsure, these are just display names; you can choose which class counts as "infected" in the sidebar.
 CLASS_NAMES = ["infected", "normal"]
-
-# Which class name indicates malaria parasites?
-INFECTED_CLASS_NAME = "infected"
 # =========================================
 
 st.set_page_config(page_title="Infection Detector", page_icon="🧫", layout="wide")
@@ -127,7 +125,7 @@ def postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thres=0.25, iou_thres
             results.append((*boxes[i].tolist(), float(conf[i]), int(c)))
     return results
 
-def draw_boxes(im: Image.Image, dets, show_only_infected=True):
+def draw_boxes(im: Image.Image, dets, infected_id: int, show_all=False):
     draw = ImageDraw.Draw(im)
     W, H = im.size
     thick = max(2, W // 150)
@@ -137,16 +135,15 @@ def draw_boxes(im: Image.Image, dets, show_only_infected=True):
     except Exception:
         font = None
 
-    infected_idx = CLASS_NAMES.index(INFECTED_CLASS_NAME) if INFECTED_CLASS_NAME in CLASS_NAMES else 0
-
     for x1, y1, x2, y2, cf, cid in dets:
-        if show_only_infected and cid != infected_idx:
+        if not show_all and cid != infected_id:
             continue
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-        color = (34, 197, 94) if cid == infected_idx else (180, 180, 180)
+        color = (34, 197, 94) if cid == infected_id else (180, 180, 180)
         draw.rectangle([x1, y1, x2, y2], outline=color, width=thick)
 
-        label = f"{CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else cid}: {cf:.2f}"
+        name = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else str(cid)
+        label = f"{name}: {cf:.2f}"
         try:
             tw = draw.textlength(label, font=font)
         except Exception:
@@ -161,10 +158,18 @@ def draw_boxes(im: Image.Image, dets, show_only_infected=True):
 # ---------- Sidebar ----------
 with st.sidebar:
     st.subheader("⚙️ Settings")
-    conf_thr = st.slider("Confidence threshold", 0.05, 0.90, CONF_THRES, 0.05)
-    iou_thr = st.slider("IOU threshold (NMS)", 0.10, 0.90, IOU_THRES, 0.05)
+    conf_thr = st.slider("Confidence threshold", 0.05, 0.90, CONF_THRES_DEFAULT, 0.05)
+    iou_thr  = st.slider("IOU threshold (NMS)", 0.10, 0.90, IOU_THRES_DEFAULT, 0.05)
+    min_area = st.number_input("Min box area (px²) to count", min_value=0, value=25, step=5)
+    # Choose which class means "infected"
+    infected_choice = st.selectbox(
+        "Class to treat as 'infected'",
+        options=list(range(len(CLASS_NAMES))),
+        format_func=lambda i: f"{i}: {CLASS_NAMES[i] if i < len(CLASS_NAMES) else i}",
+        index=0 if len(CLASS_NAMES) > 0 else 0
+    )
     show_all = st.toggle("Show non-infected boxes", value=False)
-    st.caption("Edit class names in `app.py` if needed.")
+    st.caption("If predictions look flipped, try switching the infected class here.")
 
 # ---------- Load / guard ----------
 if not Path(MODEL_PATH).exists():
@@ -191,9 +196,14 @@ if up and Path(MODEL_PATH).exists():
         pred = outputs[0]
         dets = postprocess(pred, orig_size, scale, pad_w, pad_h, conf_thr, iou_thr)
 
-    # Count only "infected"
-    infected_idx = CLASS_NAMES.index(INFECTED_CLASS_NAME) if INFECTED_CLASS_NAME in CLASS_NAMES else 0
-    infected_dets = [d for d in dets if d[5] == infected_idx]
+    # Filter tiny boxes and split by class
+    filtered = []
+    for x1, y1, x2, y2, cf, cid in dets:
+        area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+        if area >= float(min_area):
+            filtered.append((x1, y1, x2, y2, cf, cid))
+
+    infected_dets = [d for d in filtered if d[5] == infected_choice]
 
     # High-level result
     if infected_dets:
@@ -201,9 +211,9 @@ if up and Path(MODEL_PATH).exists():
     else:
         st.info("✅ No malaria parasites detected.")
 
-    # Draw boxes (infected only by default)
+    # Draw boxes
     out = img.copy()
-    out = draw_boxes(out, dets, show_only_infected=not show_all)
+    out = draw_boxes(out, filtered, infected_id=infected_choice, show_all=show_all)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -211,11 +221,12 @@ if up and Path(MODEL_PATH).exists():
     with col2:
         import pandas as pd
         with st.expander("Show detection details"):
-            if dets:
-                df = pd.DataFrame(dets, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
+            if filtered:
+                df = pd.DataFrame(filtered, columns=["x1", "y1", "x2", "y2", "conf", "class_id"])
                 df["class_name"] = df["class_id"].apply(
                     lambda i: CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
                 )
+                df["area(px²)"] = (df["x2"] - df["x1"]) * (df["y2"] - df["y1"])
                 st.dataframe(df, use_container_width=True)
             else:
-                st.write("No detections.")
+                st.write("No detections after filtering.")
