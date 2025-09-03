@@ -1,6 +1,2 @@
-streamlit>=1.36
-ultralytics>=8.2
-onnxruntime>=1.18
-#torch>=2.2
-pillow
-pandas
+
+
