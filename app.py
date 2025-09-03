@@ -6,7 +6,7 @@ from PIL import Image
 from ultralytics import YOLO
 
 APP_TITLE = "🧫🦠 Infection Detector"
-MODEL_CHOICES = ["best.onnx", "best.torchscript"]  # keep filenames as in repo root
+MODEL_CHOICES = ["best.onnx"]  # keep filenames as in repo root
 
 # ---------------------- UI SETUP ----------------------
 st.set_page_config(page_title="Infection Detector", page_icon="🧫", layout="wide")
@@ -94,3 +94,4 @@ st.markdown("---")
 st.caption(
     "Tip: For larger models (>100MB), host weights on Hugging Face or Google Drive and download at runtime."
 )
+
